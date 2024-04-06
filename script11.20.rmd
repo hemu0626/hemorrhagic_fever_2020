@@ -1,0 +1,1182 @@
+---
+title: "Study on association of air polluants with epidemic trend of hemorrhagic fever with renal syndrome in Zhejiang province"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, 
+                      message = F, 
+                      warning = F,
+                      ft.keepnext = T,
+                      results = 'asis',
+                      ft.split = F)
+# PACKAGES
+library(dplyr)
+library(haven)
+library(vroom)
+library(tidyr)
+library(gtsummary)
+library(tidyverse)
+library(ggplot2)
+library(ggsci)
+library(officer)
+library(flextable)
+library(openxlsx)
+library(readr)
+library(readxl)
+library(sf)
+library(ggthemes)
+library(survminer)
+library(trend)
+library(spdep)
+library(knitr)
+
+hemorrhagic_fever <- read_excel("hemorrhagic_fever.xlsx")
+airdata <- read_excel("airdata.xlsx")
+
+dat <- hemorrhagic_fever %>%
+       mutate(Age = as.numeric(Age),
+              Age.cat = case_when(Age <20 ~ "<20",
+                                  Age >= 20 & Age <= 29 ~ "20-29",
+                                  Age >= 30 & Age <= 39 ~ "30-39",
+                                  Age >= 40 & Age <= 49 ~ "40-49",
+                                  Age >= 50 & Age <= 59 ~ "50-59",
+                                  Age >= 60 & Age <= 69 ~ "60-69",
+                                  Age >= 70 & Age <= 79 ~ "70-79",
+                                  Age >= 80 ~ ">80"),
+              Diagonse_Date.new =  str_sub(as.character(Diagonse_Date), 1, 10),
+              Diagnose.year = str_sub(Diagonse_Date.new, 1, 4),
+              Diagnose.year = as.character(Diagnose.year),
+              Diagonse_Date.new = as.Date(Diagonse_Date.new),
+              Diagonse.month = str_sub(Diagonse_Date.new, 6, 7),
+              Diagonse.month = as.numeric(Diagonse.month),
+              Diagonse.week = week(Diagonse_Date.new),
+              Diagonse.week = as.numeric(Diagonse.week),
+              Illness_Date.new = as.Date(Illness_Date),
+              Illness.year = str_sub(Illness_Date.new, 1, 4),
+              Illness.month = str_sub(Illness_Date.new, 6, 7),
+              Illness.month = as.character(Illness.month),
+              Illness.month = as.numeric(Illness.month),
+              Illness.week = week(Illness_Date.new),
+              Illness.week = as.character(Illness.week),
+              difftime = as.numeric(Diagonse_Date.new - Illness_Date.new),
+              difftime.year = as.numeric(difftime/365.25),
+              difftime.day_7 = ifelse(difftime>7, 1, 0),
+              difftime.day_14 = ifelse(difftime>14, 1, 0),
+              difftime.day_30 = ifelse(difftime>30, 1, 0),
+              Illness.season = case_when( Illness.month %in% c(2:4) ~ "Spring",
+                                          Illness.month %in% c(5:7) ~ "Summer",
+                                          Illness.month %in% c(8:10) ~ "Autumn",
+                                          Illness.month %in% c(1,11:12) ~ "Winter"
+                                          ),
+              #difftime.month_6 = ifelse(difftime.year>(6/12), 1, 0), 
+              #difftime.month_9 = ifelse(difftime.year>(9/12), 1, 0),
+              #difftime.month_12 = ifelse(difftime.year>1, 1, 0),
+              city = `Prefecture-level City` ,
+              Diagonse.week.f = factor(Diagonse.week, levels = c(1:53)),
+              Illness.week.f = factor(Illness.week, levels = c(1:53)),
+              Age.cat = fct_relevel(Age.cat, "<20", "20-29", "30-39", "40-49",
+                                  "50-59", "60-69", "70-79", ">80"),
+              occupation = ifelse(!Classifications %in% c("Worker" , "Unemployment", "Farmer"), "Others", Classifications),
+              Death = ifelse(Death_Date == ".", 0, 1),
+              log.difftime = log(difftime),
+              year = as.numeric(Illness.year),
+              month =  as.numeric(Illness.month),
+              city = `Prefecture-level City`)
+
+dat$Illness.season <- factor(dat$Illness.season)
+dat$Illness.season <- fct_relevel(dat$Illness.season, "Spring", "Summer", "Autumn", "Winter" )
+
+names(airdata)[c(1,3)] <- c("city", "time")
+
+airdata <- airdata %>% 
+           mutate(year = substr(time, 1, 4),
+                  month = substr(time, 6, 7),
+                  city = case_when(#city == "临安" ~ , 
+                                   city == "丽水" ~ "Lishui",
+                                   #city == "义乌" ~ ,
+                                   city == "台州" ~ "Taizhou",
+                                   city == "嘉兴" ~ "Jiaxing",
+                                   city == "宁波" ~ "Ningbo",
+                                   #city == "富阳" ~ ,
+                                   city == "杭州" ~ "Hangzhou",
+                                   city == "温州" ~ "Wenzhou",
+                                   city == "湖州" ~ "Huzhou",
+                                   city == "绍兴" ~ "Shaoxing",
+                                   city == "舟山" ~ "Zhoushan",
+                                   city == "衢州" ~ "Quzhou",
+                                   #city == "诸暨" ~ ,
+                                   city == "金华" ~ "Jinhua"),
+                  aqi = as.numeric(aqi),
+                  pm2_5 = as.numeric(pm2_5),
+                  pm10 = as.numeric(pm10),
+                  so2 = as.numeric(so2),
+                  no2 = as.numeric(no2),
+                  co = as.numeric(co),
+                  o3 = as.numeric(o3),
+                  month = as.numeric(month),
+                  year = as.numeric(year),
+                  season = case_when(month %in% c(3:5) ~ "Spring",
+                               month %in% c(6:8) ~ "Summer",
+                               month %in% c(9:11) ~ "Autumn",
+                               month %in% c(12,1:2) ~ "Winter")) 
+
+final.data <- dat %>% 
+  left_join(airdata, by = c("year", "month", "city")) %>%
+  filter(year != 2004)
+
+
+temp <- read.xlsx("temp.xlsx")
+names(temp) <- c("city", "x", "year", "month", "temperature", "Humidity")
+str(temp)
+
+temp.x <- temp %>% 
+        mutate(year = as.numeric(year),
+               month = as.numeric(month),
+               temperature = as.numeric(temperature),
+               Humidity = as.numeric(Humidity),
+                city = case_when(#city == "临安" ~ , 
+                                   city == "丽水" ~ "Lishui",
+                                   #city == "义乌" ~ ,
+                                   city == "台州" ~ "Taizhou",
+                                   city == "嘉兴" ~ "Jiaxing",
+                                   city == "宁波" ~ "Ningbo",
+                                   #city == "富阳" ~ ,
+                                   city == "杭州" ~ "Hangzhou",
+                                   city == "温州" ~ "Wenzhou",
+                                   city == "湖州" ~ "Huzhou",
+                                   city == "绍兴" ~ "Shaoxing",
+                                   city == "舟山" ~ "Zhoushan",
+                                   city == "衢州" ~ "Quzhou",
+                                   #city == "诸暨" ~ ,
+                                   city == "金华" ~ "Jinhua"),
+               x = case_when(#city == "临安" ~ , 
+                                   x == "丽水" ~ "Lishui",
+                                   #city == "义乌" ~ ,
+                                   x == "台州" ~ "Taizhou",
+                                   x == "嘉兴" ~ "Jiaxing",
+                                   x  == "宁波" ~ "Ningbo",
+                                   #city == "富阳" ~ ,
+                                   x == "杭州" ~ "Hangzhou",
+                                   x == "温州" ~ "Wenzhou",
+                                   x == "湖州" ~ "Huzhou",
+                                   x == "绍兴" ~ "Shaoxing",
+                                   x == "舟山" ~ "Zhoushan",
+                                   x == "衢州" ~ "Quzhou",
+                                   #city == "诸暨" ~ ,
+                                   x == "金华" ~ "Jinhua"))
+
+temp.x <- temp.x  %>% filter(year >= 2005 & year <= 2020)
+temp.x$month <- rep(1:12, 368)
+temp.x.agg <- temp.x %>% group_by(city, year, month) %>% 
+   summarise( Temperature = mean(temperature, na.rm = T),
+                 Humidity = mean(Humidity, na.rm = T)) %>%
+   ungroup()
+
+
+final.data.x <- final.data %>% 
+  left_join(temp.x.agg, by = c("year", "month", "city")) 
+
+
+# 下载中国区县级行政地图
+# raster::getData('ISO3') 各个国家或地区的 ISO3 代码
+
+china_map <-  raster::getData(
+  name = "GADM",
+  country = "CHN", # 中国的 ISO3 代码
+  level = 2, # 国家=0 省=1 市=2 县=3
+  type = "sf", # 返回数据类型为 sf 类型
+  path = "mapdata/" # 保存到本地目录，以便复用
+)
+
+zj_map <- china_map[china_map$NAME_1 == "Zhejiang", ]
+
+
+airdata$season <- fct_relevel(airdata$season, "Spring","Summer","Autumn","Winter")
+
+```
+
+# 1. Abstract
+
+A total of 7,724 hemorrhagic fever with renal syndrome (HFRS) cases were reported in Zhejiang Province from 2005 to 2020, resulting in 25 deaths. There were two incidence peaks each year, one in late spring and early summer (May-June) and another in winter (November-January). The top three areas with the highest cumulative cases were Ningbo (1,875, 24.27%), Taizhou (1,642, 21.25%), and Shaoxing (1,123, 14.54%). Among the reported cases, the male-to-female ratio was 2.73∶1 (5,656∶2,068). The majority of HFRS cases affected middle-aged and elderly individuals, with cases aged 41-70 years accounting for 60.95%. Most HFRS cases were farmers, making up 69.89% (5,398 out of 7,724). The spatial distribution of HFRS cases was correlated in most years.
+
+Hemorrhagic Fever with Renal Syndrome (HFRS) has experienced a resurgence in China since 1963, with environmental factors being identified as potential contributors. In our analysis, data encompassing the years 2013 to 2020 were scrutinized, focusing on six air pollutants and meteorological variables, including temperature and humidity. Notably, a low to moderate correlation was observed between HFRS incidence and monthly Air Quality Index (AQI) (r = 0.27), Nitrogen Dioxide (NO2) (r = 0.42), and Sulfur Dioxide (SO2) (r = 0.25). Additionally, a negative correlation was noted with temperature (r = -0.22). Spatial autocorrelation was further assessed using the Moran test, revealing patterns in the geographical distribution of HFRS cases. It is essential to emphasize that while correlations were identified, a direct causative relationship has not been established through our analysis.
+
+# 2. Introduction
+
+HFRS is found throughout the world, which is a rodent-borne illness caused by hantaviruses including Hantaan (HTNV), Seoul (SEOV), Dobrava-Belgrade virus, Saaremma, and Puumala. Most HFRS patients are infected through direct exposure to the aerosolized droppings or body fluids of infected rodents, but the human-to-human transmission is rare. Main clinical manifestations include fever, vomiting, abdominal pains, hypotension, kidney injury, thrombocytopenia, and shockHaantan virus is widely distributed in eastern Asia, particularly in China, Russia, and Korea. Puumala virus is found in Scandinavia, western Europe, and western Russia. Dobrava virus is found primarily in the Balkans, and Seoul virus is found worldwide. Saaremaa is found in central Europe and Scandinavia. In the Americas, hantaviruses cause a different disease known as hantavirus pulmonary syndrome. 
+
+The analyzed data on HFRS cases in Zhejiang province during 2005-2020 were collected from Zhejiang Provincial Center for Disease Control and Prevention (CDC). For a descriptive analysis, The study consisted of `r dim(dat)[1]` HFRS in China from 2004 to 2020. The data contains the basic characteristic like age, gender living addresses, occupations and the year of diagnostics and illness. Since in year 2004 we only get few data, we think it is measurement problem. So, we exclude that from our analysis later. Zhejiang has an population of 64,567,588 in 2020. The geographical scope of our study encompasses the main cities, specifically Hangzhou, Huzhou, Jiaxing, Jinhua, Lishui, Ningbo, Quzhou, Shaoxing, Taizhou, Wenzhou, and Zhoushan. These cities might eventually be further subdivided into county levels for more detailed analysis.
+
+This research also investigates the impact of diverse factors, including environmental, meteorological factors, on the incidence of infectious diseases.  Monthly air quality data, including the Air Quality Index (AQI) and concentrations of pollutants such as PM2.5, PM10, SO2, NO2, CO, and O3, were obtained from National Air Quality Monitoring Stations in China. The study specifically examines the spatio temporal clustering distribution characteristics and trends in HFRS outbreaks in Zhejiang Province. The findings contribute valuable data for a comprehensive exploration of the epidemiological characteristics and influencing factors of HFRS. Furthermore, the results inform the development of predictive warning models and strategies for precise control of HFRS. The multifaceted analysis enhances our understanding of the intricate dynamics influencing the occurrence of infectious diseases. The heat map shows seasonal patterns, which mean the HFRS showed semiannual peaks of activity, including a peak in May and June followed by a peak in November and December. HFRS predominantly locally circulated in the north, northeast, and
+northwest of Zhejiang.
+
+During 2013–2018, the national monthly mean concentrations were 51.28 μg/m3 for PM2.5, 90.75 μg/m3 for PM10, 24.35 μg/m3 for SO2, 33.63 μg/m3 for NO2, and 1.08 mg/m3 for CO, with a daytime 8-hour mean concentration for O3 at 86 mg/m3. The monthly concentrations of PM2.5 and PM10 exceeded the 2018 China guidelines II level. Boxplots depicting monthly variation in air pollution concentrations revealed a distinct seasonal pattern. We observe a noteworthy correlation among various air pollutants, indicating a level of interdependence. This suggests that the presence or concentration of one air pollutant is associated with the behavior or characteristics of others. However, temporal variations were evident in their trends. The average monthly concentrations of PM2.5, PM10, and CO experienced a significant annual decrease. In contrast, O3 values demonstrated a notable increase over the 6-year period (2013–2018), while NO2 exhibited a volatile upward trend from 2016 onward, following a declining pattern during 2013–2016. Besides, concentrations of NO2 and O3 were positively correlated with HFRS incidences in quantile groups. Meteorological data, including temperature and humidity, were also collected for analysis.
+
+In the realm of public health, understanding the spread of infectious diseases is crucial for effective prevention and control measures. Recent studies have delved into the intricate dynamics of epidemics by employing sophisticated spatiotemporal modeling techniques. These approaches not only provide insights into the geographical patterns of disease transmission but also unravel the temporal aspects that influence the course of an outbreak. There are also various studies focusing on the epidemiology of infectious diseases with spatio-temporal modeling. Spatio temporal modeling in epidemiology involves the integration of space (geographical location) and time into the analysis of disease spread. This multidimensional approach enables researchers to discern patterns, identify hotspots, and predict the trajectory of infectious diseases more accurately. By incorporating geographical information systems (GIS). Creating models that capture the complex interplay between space and time in the context of disease dynamics. One key aspect of spatio temporal modeling is the exploration of geographical patterns in disease transmission.  can By mapping the spatial distribution of cases, revealing clusters or areas with higher vulnerability. Understanding how diseases propagate across different regions allows for targeted interventions, resource allocation, and the development of region-specific public health strategies. The integration of spatio temporal modeling in epidemiology also empowers to develop predictive models. These models can forecast the spread of diseases based on current trends, environmental factors, and population dynamics. Such foresight enables public health authorities to implement preventive measures in advance, potentially mitigating the severity of an outbreak and reducing its impact on communities. Nazia N et al [14] analyzed the The spread of the COVID-19 pandemic by reviewing 154 published peer-reviewed articles on COVID-19 that applied various Bayesian and Frequentist spatial methods to identify spatial variations of the disease risk and associated socioeconomic, demographic, and climatic factors for such spatial variations of the risk.
+
+Epidemiology has a rich tradition of investigating factors that influence the fluctuation in the occurrence or fatality rates of infectious and chronic diseases. Among these factors, geographical or spatial variances in health outcomes play a pivotal role in assessing the distribution and effectiveness of healthcare. These spatial variations not only provide crucial insights into patterns of dependence and noise levels in the data but also serve as a foundation for appraising healthcare performance.
+
+Liu et al. (2019) utilized the Autoregressive Integrated Moving Average (ARIMA) model to evaluate and forecast HFRS incidence in China, employing historical time series data. Although the ARIMA model proves beneficial for estimating continuous time series data, it tends to overlook correlations among different spatial locations.
+
+Recognizing this limitation, Santosha Rathod (2018)[13] introducedAn improved Space-Time Autoregressive Moving Average (STARMA) model for Modelling and Forecasting of Spatio-Temporal time-series data. However, it is crucial to note that the STARMA model treats the spatial influences of data in distinct locations as individual factors. To improve the precision of spatial epidemic analysis, particularly in the context of HFRS, a more comprehensive strategy involves considering both spatial and temporal characteristics, incorporating interactive influences. This integrative approach holds the potential to contribute to a more nuanced comprehension of the dynamics underlying HFRS outbreaks.
+
+# 3. Data collection and method
+
+All statistical analyses were performed using R (version 4.3.1, R Foundation for Statistical Computing, Vienna, Austria). A p-value of <0.05 was considered statistically significant. The
+geographic information are downloaded by using the raster package (Hijmans 2022a), which allows free downloading of national administrative boundary information from the GADM website, which can be used for academic and non-commercial purposes. It provides administrative boundary data at the national, provincial, municipal, and county levels, which can be directly downloaded and imported into the R environment.
+
+(1) Descriptive analyses
+
+We utilized measures such as mean, standard deviation, quartiles (P25, median, P75), to characterize the distribution of HFRS incidence, air pollutants, and meteorological variables. The epidemiological characteristics of HFRS cases, including geographic distribution, seasonal pattern, gender, age, and occupation, were analyzed using descriptive methods. 
+
+(2) Mann-Kendall Testing
+The Mann-Kendall test is a non-parametric, rank-based test that is commonly used in environmental sciences to determine whether or not there is a monotonic trend in a timeseries. The assumption that you need to consider before using Mann-Kendall is that there is no seasonality in the dataset (there is a seasonal Kendall test that you can use for timeseries collected over mutliple seasons).
+
+![](mkfor.png)
+
+(3) Anova Test
+
+The Analysis of Variance (ANOVA) test is a statistical method used to assess whether the means of two or more groups are significantly different from each other. It is particularly valuable when comparing means across multiple levels of a categorical variable. The ANOVA test achieves this by partitioning the total variance in the data into different components associated with each group. The approach aimed to examine the time differences between diagnostics and illness onset.
+
+![](anova.png)
+
+(4) Correlation plot
+
+The Pearson correlation coefficient is a metric quantifying the linear correlation between two sets of data. Calculated as the ratio of the covariance of two variables to the product of their standard deviations, it provides a normalized measure of covariance.
+
+![](corr.png)
+
+
+We also used correlation plot to display the association between different factors. Correlation plot is also well known as correlation matrix or heatmap, is a visual representation of the correlation coefficients between variables in a dataset. The correlation plot is particularly useful for identifying patterns, relationships, and dependencies among different variables. The correlation coefficient quantifies the strength and direction of the linear relationship between two variables. It ranges from -1 to 1, where -1 indicates a perfect negative correlation, 1 indicates a perfect positive correlation, and 0 indicates no correlation. A high positive correlation indicates that as one variable increases, the other variable tends to increase as well. A high negative correlation indicates that as one variable increases, the other variable tends to decrease. 
+ 
+(5) The global spatial autocorrelation analysis
+
+To quantify the presence of spatial autocorrelation in the residuals from this model we can 
+compute Moran’s I statistic (Moran 1950) and conduct a permutation test. The permutation 
+test has the null hypothesis of no spatial autocorrelation and an alternative hypothesis of 
+positive spatial autocorrelation, and is conducted using the moran.mc() function from the 
+spdep package in R. Moran's I is a statistical measure employed to evaluate spatial autocorrelation in data, specifically the correlation observed among neighboring locations in spatial domains. Unlike one-dimensional autocorrelation, spatial autocorrelation operates within multi-dimensional spatial contexts, typically 2 or 3 dimensions, considering various directions within the spatial framework. This metric is widely used in spatial statistics and geographical analysis to identify patterns of clustering, dispersion, or randomness in spatial datasets.
+
+![](moran.png)
+
+Commonly employed in various statistical analyses, fixed effects models are a staple in data modeling, including applications involving spatial data. However, the suitability of a fixed effects model for spatial data hinges on the intrinsic nature of the data and the associated assumptions. Spatial data analysis often grapples with challenges related to spatial autocorrelation, signifying the interdependence of observations in space. The presence of spatial autocorrelation can contravene the assumption of independence of observations, a fundamental premise in many standard statistical models, notably fixed effects models.
+
+In instances where concerns about spatial dependence arise, researchers may turn to spatial econometric models or spatial random effects models. These alternatives explicitly accommodate spatial autocorrelation by integrating spatial structures like spatial lag or spatial error terms. This nuanced approach enhances the model's ability to capture intricate spatial relationships within the data. While fixed effects models can be adapted to spatial data, a critical consideration involves assessing their appropriateness for the specific data characteristics and their effectiveness in addressing spatial dependencies. Depending on the spatial structure of the data and the research objectives, alternative spatial modeling approaches may prove more fitting. It is imperative to conduct diagnostic tests for spatial autocorrelation and thoroughly evaluate the assumptions of the selected model to ensure the reliability and validity of the results.
+
+
+# 4. Result
+
+The descriptive statistics provide a general summary of the occurrence of HFS over the years. Continuous variables are presented with mean, standard deviation, as well as median and interquartile range (IQR). Categorical variables are displayed in terms of frequency and percentage.
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+   dat %>% 
+    select(Gender, Age, Age.cat, Illness.season,
+           city, District, occupation, Death, Illness.year
+           )%>%
+    tbl_summary(
+        label = list(),
+        missing = "ifany",
+        statistic = list(
+        all_continuous() ~ "{mean}({sd})\n{median}[{p25},{p75}]",
+        all_categorical() ~ "{n}\n({p}%)"
+        )
+        ) %>% 
+      #    modify_table_body(
+      #    ~.x %>%
+      #      mutate(
+      #      across(all_stat_cols(), ~gsub("^0.*", "-", .))
+      #      )
+      #    
+    as_flex_table() %>%
+    set_table_properties(layout = "autofit") %>% autofit()
+```
+
+epidemiological overview: During the period spanning 2005 to 2020, Zhejiang Province documented a cumulative total of 7,724 cases of HFRS, resulting in an average annual incidence rate of 0.9065 per 100,000 individuals. The yearly incidence rates (/100,000) for the aforementioned time frame were as follows: 1.52, 1.53, 1.49, 1.09, 0.84, 0.89, 0.99, 0.91, 0.95, 0.70, 0.66, 0.62, 0.63, 0.59, 0.63, and 0.46, accompanied by 25 reported fatalities. The epidemiological landscape in Zhejiang Province exhibited a declining trend commencing in 2007, maintaining relative stability from 2008 to 2013, entering a plateau phase from 2014, and manifesting a substantial reduction in 2020. Monthly distribution patterns of HFRS cases disclosed two peaks annually, one occurring in May-June (late spring to early summer) and the other spanning from November to January of the subsequent year (winter). Notably, the summer peaks in 2009, 2013, and 2014 surpassed the corresponding winter peaks. Conversely, in 2019 and 2020, the summer and winter peaks exhibited comparable magnitudes. In the remaining years, the winter peaks outpaced their summer counterparts.
+
+
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(final.data.x, aes(x = Illness.year)) +
+  geom_bar(fill="skyblue") +
+  ylab("")+
+  xlab("")+
+  theme_pubclean()
+
+t1 <- final.data.x %>% group_by(Illness.year) %>% summarise(count =n()) %>% ungroup()
+trend::mk.test(t1$count)
+```
+
+The output of Mann-Kendall trend test is -0.8, which indicates a strong, monotonic decrease in annual incidence over the 16 years observed time period. This degree of negative monotonicity is significant with the p-value of 1.893e-05. The limitations of this test in the trend analysis sense is that it does not provide any insight into the magnitude of the trend. 
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(dat, aes(x = Illness.season)) +
+  geom_bar(fill="skyblue", width = 0.5) +
+  ylab("")+
+  xlab("")+
+  theme_pubclean()
+
+t2 <- final.data.x %>% group_by(Illness.season) %>% summarise(count =n()) %>% ungroup()
+trend::mk.test(t2$count)
+```
+
+We observe a seasonal variation in the occurrence of HFRS, with a higher incidence during winter (December, January, February), followed by summer (June, July, August). There is no noticeable difference in HFRS occurrence between spring (March, April, May) and autumn (September, October, November). 
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(dat, aes(x = city)) +
+  geom_bar(fill="skyblue", width = 0.5) +
+  ylab("")+
+  xlab("")+
+  theme_pubclean()
+```
+
+Spatial distribution: HFRS cases have been reported in all 11 cities, with the top three cities in terms of cumulative cases and their respective proportions being Ningbo (1,875 cases, 24.27%), Taizhou (1,642 cases, 21.25%), and Shaoxing (1,123 cases, 14.54%). High-incidence counties (cities, districts) for annual incidence rates are mainly distributed in the eastern, western, central, and southwestern regions of Zhejiang Province.
+
+The provided chart illustrates the distribution of disease incidence categorized by occupation (farmer, unemployment, worker, and others) over the specified years. It is evident that the most prevalent group is comprised of farmers, constituting 26% of the total cases. The subsequent largest category is labeled as "others." Furthermore, notable trends emerge, particularly from 2016 to 2020, where the unemployment category exhibits a discernible escalation in risk.
+  
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(dat, aes(x = Illness.year, fill = occupation)) +
+  geom_bar(position="fill", width = 0.5) +
+  ylab("")+
+  xlab("")+
+  theme_pubclean()
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(dat, aes(x = Age.cat, fill = Gender)) +
+  geom_bar(position="fill", width = 0.5) +
+  ylab("")+
+  xlab("")+
+  theme_pubclean()
+```
+
+Population Distribution: among the 7,724 cases, the male-to-female ratio is 2.73:1 (5,656:2,068). The distribution by age groups is as follows: ≤20 years old, 261 cases (3.38%); 21-30 years old, 797 cases (10.32%); 31-40 years old, 1,492 cases (19.32%); 41-50 years old, 1,954 cases (25.30%); 51-60 years old, 1,806 cases (23.38%); 61-70 years old, 948 cases (12.27%); and >70 years old, 466 cases (6.03%), with the 41-70 age group accounting for 60.95%. The majority of cases are reported in individuals with an occupation as farmers, accounting for 69.89% (5,398/7,724). Upon scrutinizing age groups and gender, it becomes evident that approximately 75% of cases can be attributed to a particular age group. Moreover, a conspicuous trend emerges, indicating that as women age, they exhibit a higher likelihood of contracting HFRS in comparison to men. 
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+final.data %>% group_by(year, month) %>% summarise(count=n()) %>% ungroup() %>%
+ ggplot(,mapping = aes(x = month, y = year, fill = count)) +
+  geom_tile()  +
+  scale_fill_gradient(name = "",
+                      low = "#FFFFFF",
+                      high = "#012345") +
+  theme(strip.placement = "outside") +
+  scale_x_continuous(breaks = seq(from = 1, to = 12, by = 1))+
+  theme_pubclean()
+```
+
+The heat map illustrates elevated incidence rates in May, June, November, and December compared to other months throughout the year. Notably, from 2005 to 2020, there is a discernible decrease in overall incidences.   
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+breaks = c(50, 100, 200, 500, 100)
+mycolours = c("white","grey70", "grey50", "orange", "red")
+
+zj <- china_map[china_map$NAME_1 == "Zhejiang", ]
+zj$city <- zj$NAME_2
+
+merge.year <- final.data.x %>% filter(year == 2005) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  labs(title=("2005")) +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2006) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  labs(title=("2006")) +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2007) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  labs(title=("2007")) +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2008) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  labs(title=("2008")) +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2009) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  labs(title=("2009")) +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2010) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  labs(title=("2010")) +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2011) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  labs(title=("2011")) +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2012) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  labs(title=("2012")) +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2013) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  labs(title=("2013")) +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2014) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  labs(title=("2014")) +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2015) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  labs(title=("2015")) +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2016) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  labs(title=("2016")) +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2017) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  labs(title=("2017")) +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2018) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+
+merge.year <- final.data.x %>% filter(year == 2019) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+merge.year <- final.data.x %>% filter(year == 2020) %>% group_by(city) %>% summarise(count =n()) %>% ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = count), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+
+s1 <- zj.x %>% filter(NAME_2 != "Zhoushan")%>% drop_na(count) %>%select(count, geometry)
+nb <- poly2nb(s1, queen=TRUE)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.test(s1$count,lw)
+```
+
+Spatial Distribution: HFRS cases have been reported in 11 cities, with the top three cities in terms of cumulative cases and composition being Ningbo City (1,875 cases, 24.27%), Taizhou City (1,642 cases, 21.25%), and Shaoxing City (1,123 cases, 14.54%). The top five counties (cities, districts) in terms of cumulative cases are Tiantai County (606 cases), Longquan City (490 cases), Yinzhou District (447 cases), Zhuji City (407 cases), and Kaihua County (402 cases), while Haiyan County and Shengsi County have not reported any cases. We observed dynamic variations on the spatial changes of color indicators from 2005 to 2020. Descriptive statistics suggest that counties (cities, districts) with high incidence rates over the years are predominantly distributed in the eastern, western, central, and southwestern regions of Zhejiang Province. We also conduct a Moran test for each year, obtaining similar results indicating spatial correlation. However, we exclude Zhoushan City from the analysis due to its island status, signifying isolation from other cities.
+
+```{r}
+#prop_trend_test(xtab, score = NULL)
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(dat, aes( x = Illness.season, fill = Gender)) +
+  geom_bar(width = 0.5) + 
+  xlab("") +
+  ylab("") +
+  #facet_grid(occupation ~.) +
+  theme_pubclean()
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(dat, aes(y = log(difftime), x = Illness.season, fill = Gender)) +
+  geom_boxplot() + 
+  xlab("") +
+  ylab("") +
+  #facet_grid(occupation ~.) +
+  theme_pubclean()
+
+dat$log.difftime <- ifelse(dat$log.difftime <0, 0, dat$log.difftime)
+res.aov2 <- aov(log.difftime ~ Illness.season + Gender, data = dat)
+summary(res.aov2)
+```
+
+We also analyzed the logarithmic transformation of the difference between diagnosis time and the onset of illness. Boxplots were created to visualize it. A two-way ANOVA was performed to test for the the effect. From the ANOVA table, we can conclude that only the season of illness is statistically significant. There is no significant difference in this time difference based on gender.
+
+Spatial Autocorrelation: The global Moran's I coefficient is consistently greater than 0 for all years, with most years having a p-value less than 0.05. This indicates a significant positive spatial autocorrelation of HFRS incidence at the county level in Zhejiang Province for most years.
+
+In summary, from 2004 to 2020, HFRS primarily affected middle-aged and elderly individuals, males, and farmers in Zhejiang Province. Outbreaks were more common in the eastern regions during late spring, early summer, and winter. It is recommended to implement precision control measures for key populations in high-risk areas before the epidemic season arrives. In these key areas, a combination of health education and public hygiene campaigns should be carried out as comprehensive preventive measures. Continuous monitoring of inter-species epidemics among animals is essential for effectively safeguarding the health of high-risk populations.
+
+
+```{r}
+   final.data.x %>% 
+    select(aqi, pm2_5, pm10, so2, no2, co ,o3, Temperature, Humidity
+           )%>%
+    tbl_summary(
+        label = list(),
+        missing = "no",
+        statistic = list(
+        all_continuous() ~ "{mean}({sd})\n{median}[{p25},{p75}]",
+        all_categorical() ~ "{n}\n({p}%)"
+        )
+        ) %>% 
+      #    modify_table_body(
+      #    ~.x %>%
+      #      mutate(
+      #      across(all_stat_cols(), ~gsub("^0.*", "-", .))
+      #      )
+      #    
+    as_flex_table() %>%
+    set_table_properties(layout = "autofit")
+```
+
+The table shows the descriptive statistics about air pollution characteristics and meteorological factor temperature and humidity in Zhejiang province, during 2013-2020, the year average was 41 μg/m3 for PM2.5, 65 μg/m3 for PM10, 13 μg/m3 for SO2, 35 μg/m3 for NO2, and 0.81 mg/m3 for CO, and the daytime 8-h mean concentration for O3 was 89 mg/m3. The monthly concentrations of PM2.5 and PM10 were much higher than the China guidelines II level issued in 2018. The boxplots of monthly variation of air pollution concentrations show an obvious seasonal pattern. The peaks of PM2.5, PM10, and NO2 concentration mostly appeared in December and January, while the peaks of O3 appeared in late spring to late summer, from May to August. The mean temperature is 17 Celsius, standard deviation 8. The average humidity is 72 g/m3 with standard deviation 6. The average temperature, which reminds that in the areas where temperature is suitable, personal protection should be taken when going out as to avoid contact with rodents. 
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(airdata, aes(x = season, y = aqi, fill = season)) + 
+  geom_boxplot() +
+  xlab("") +
+  theme(legend.position="none")+
+  theme_pubclean()
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(airdata, aes(x = season, y = aqi, fill = season)) + 
+  geom_boxplot() +
+  xlab("") +
+  theme(legend.position="none")+
+  theme_pubclean()
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(airdata, aes(x = season, y = pm2_5, fill = season)) + 
+  geom_boxplot() +
+  xlab("") +
+  theme(legend.position="none")+
+  theme_pubclean()
+
+summary(aov(airdata$pm2_5 ~ airdata$season))
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(airdata, aes(x = season, y = pm10, fill = season)) + 
+  geom_boxplot() +
+  xlab("") +
+  theme(legend.position="none")+
+  theme_pubclean()
+
+summary(aov(airdata$pm10 ~ airdata$season))
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(airdata, aes(x = season, y = so2, fill = season)) + 
+  geom_boxplot() +
+  xlab("") +
+  theme(legend.position="none")+
+  theme_pubclean()
+
+summary(aov(airdata$pm2_5 ~ airdata$season))
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(airdata, aes(x = season, y = no2, fill = season)) + 
+  geom_boxplot() +
+  xlab("") +
+  theme(legend.position="none")+
+  theme_pubclean()
+
+summary(aov(airdata$no2 ~ airdata$season))
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(airdata, aes(x = season, y = co, fill = season)) + 
+  geom_boxplot() +
+  xlab("") +
+  theme(legend.position="none")+
+  theme_pubclean()
+
+summary(aov(airdata$co ~ airdata$season))
+```
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+ggplot(airdata, aes(x = season, y = o3, fill = season)) + 
+  geom_boxplot() +
+  xlab("") +
+  theme(legend.position="none")+
+  theme_pubclean()
+
+summary(aov(airdata$o3 ~ airdata$season))
+```
+
+The relationship between air pollutants and HFRS. We discovered significant associations between HFRS incidence and three of the six air pollutants. It was observed between HFRS incidence and monthly Air Quality Index (AQI) (r = 0.27), Nitrogen Dioxide (NO2) (r = 0.42), and Sulfur Dioxide (SO2) (r = 0.25). The temperature was negatively correlated with the incidence and we did not find that humidity has any association with the HFRS incidence.
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+a <- final.data.x %>% 
+       group_by(year, month) %>%
+       summarise(Incidence = n(),
+                 Aqi = mean(aqi, na.rm = T),
+                 Pm2.5 = mean(pm2_5, na.rm = T),
+                 Pm10 = mean(pm10, na.rm = T),
+                 So2 = mean(so2, na.rm = T),
+                 No2 = mean(no2, na.rm = T),
+                 Co = mean(co, na.rm = T),
+                 O3= mean(o3, na.rm = T),
+                 Temperature = mean(Temperature, na.rm = T),
+                 Humidity = mean(Humidity, na.rm = T)
+                 ) %>%
+       ungroup()
+
+a$time <- paste(a$year,a$month,"01",sep="-")
+a$time.x <- as.Date(a$time)
+
+ggplot(a, aes(time.x ,y = Temperature)) +
+  geom_smooth() +
+  xlab("")+
+  theme_pubclean()
+
+ggplot(a, aes(time.x ,y =Aqi)) +
+  geom_smooth() +
+  xlab("")+
+  theme_pubclean()
+
+ggplot(a, aes(time.x ,y =So2)) +
+  geom_smooth() +
+  xlab("")+
+  theme_pubclean()
+
+ggplot(a, aes(time.x ,y =No2)) +
+  geom_smooth() +
+  xlab("")+
+  theme_pubclean()
+
+
+```
+
+The density plot visually depicts the distribution's shape, aiding in the identification of symmetry, left or right skewness, and whether it is unimodal or bimodal. Information about the spread or variability of the data is conveyed by the width of the density plot, where a broader plot suggests higher variability, whereas a narrower plot suggests lower variability.
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+b <- a %>% select(-c(year, month, time, time.x))
+
+#CACULATE PEARSON CORRELATION COEFFICIENTS
+M<- cor(b, use="pairwise.complete.obs", method="pearson")
+#TEST FOR CORRELATION BETWEEN SAMPLES
+P<- round(as.matrix(psych::corr.test(b, use="pairwise.complete.obs",method = "pearson")$p),3)
+
+corrplot::corrplot(M, p.mat = P, method = "circle", type = "lower",
+         sig.level = c(.001, .01, .05),  tl.pos="lt", tl.col="black", tl.cex=1,  tl.offset=0.2,cl.pos="r",
+         insig = "label_sig", pch.cex = 0.8, pch.col="red",cl.cex = 0.8)
+corrplot::corrplot(M,  type="upper", method="number",
+         col="coral4",  tl.pos="n", cl.pos="n", number.cex = 0.8, add=T,diag=F)
+```
+
+In our analysis, we aggregated the data at a monthly level across all cities. Overall, we observed a noteworthy linear positive correlation between the incidence of HFRS and AQI (r = 0.27), SO2 (r = 0.25), and NO2 (r = 0.42), and a significant negative linear correlation with temperature (r = -0.22). However, there were no significant linear correlations with other variables such as O3 and humidity. The identified significant variables, including AQI, SO2, NO2, and temperature, may be considered for inclusion in our model. As mentioned earlier, temperature is a crucial factor contributing to the spread of HFRS.
+
+```{r fig.height=5, fig.width=9,fig.fullwidth=TRUE, fig.margin=TRUE}
+
+breaks = c(0, 5, 10, 15, 20, 25, 30)
+mycolours = c("white","grey70", "grey50","grey20",  "orange", "red")
+
+merge.year <- final.data.x %>% group_by(year, city) %>%
+       summarise(Temperature = mean(Temperature, na.rm = T)) %>%
+       ungroup()
+
+zj.x <- zj %>% left_join(merge.year)
+
+ggplot(zj.x) +
+  geom_sf(aes(fill = Temperature), color = NA) +
+  scale_fill_gradientn(colors = mycolours, breaks=breaks, labels=format(breaks))+
+  coord_sf(datum = NA) +
+  geom_sf_label(aes(label = city)) +
+  theme_map() +
+  theme(legend.position="right",
+        plot.title = element_text(hjust = 0.5,
+                                  color = "Gray40",
+                                  size = 16,
+                                  face = "bold"),
+        plot.subtitle = element_text(color = "blue"),
+        plot.caption = element_text(color = "Gray60"))  +
+guides(fill = guide_colorbar(title = "",
+                             title.position = "bottom",
+                             title.theme = element_text(size = 10,
+                                                        face = "bold",
+                                                        colour = "gray70",
+                                                        angle = 0)))
+```
+
+The temperature across the year in Zhejiang shows that on average the northwest (Zhangzhou, Huzhou) and southern areas (Wenzhou) have higher temperature compared to other regions, such as the northeast (Ningbo).
+
+# Discussion
+
+From the paper by Zhang et.al 2021[16], they analyze the changing epidemiology of HFRS in Southeastern China during 1963–2020: A retrospective analysis of surveillance data by Zhang et.al 2021. They analyzed the impact of policies and interventions on county-level HFRS epidemics, they applied a space-time analysis for counties before and after the changes of policies and interventions. The HFRS epidemic in Zhejiang Province can be divided into five stages. (1) 1963-1978: Period of Scattered Outbreaks (2) 1979-1986: Rapid Increase in Epidemic (3) 1987-1995: Rapid Decline in Epidemic (4) 1996-2004: Sustained Decline in Epidemic (5) 2005-2020: Continued Scattered Outbreaks. While we cannot solely focus on the political impact on the outbreaks of HFRS, we do believe that economic factors, air quality play and meteorological factors play a significant role.
+
+Cases have been reported consistently[17]. The high incidence seasons of HFRS are closely related to the nature of the epidemic source. Zhejiang Province is classified as a mixed epidemic area with both domestic and wild rodents. There are two peaks in incidence each year, during the summer and winter. In most years, the winter peak is higher than the summer peak, which aligns with previous research findings. Studies indicate that the summer peak is primarily associated with indoor infections resulting from the reproduction of domestic rodents, while the winter peak is mainly linked to outdoor labor involving contact with wild rodents. Similar to previous research conclusions, this study observes that the epidemic source area of HFRS in Zhejiang Province has gradually expanded from the northern region to the central region. The eastern and western regions have consistently been high-incidence areas. HFRS is a naturally occurring zoonotic disease, and the main hosts in Zhejiang Province are black-striped field mice and brown rats, widely distributed in the hilly areas of both eastern and western regions. This study finds that the high-risk population for HFRS in Zhejiang Province is mainly composed of farmers and individuals aged 60 and above. This is related to the higher density of rodent populations in rural areas and the frequent contact between farmers and rodent populations, suggesting the need to expand the target population for HFRS vaccination.
+
+Several constraints in our research merit attention. Firstly, the absence of air pollutants data for the years 2005–2012 stems from the initiation of the national air quality surveillance network. We cannot precisely merge the data from the two sources, resulting in missing data. Secondly, the air quality data is at the city level rather than the county level. However, we observed that farmers were more exposed to the infection, it is necessary to analyze whether there is a difference in air quality between urban and rural areas. Thirdly, the lack of precise quantification for social and economic status, available health services, and hygiene is due to the unavailability of relevant data. The occupation status cannot is not enough. Fourthly, our study relied on monthly data, preventing an in-depth exploration of the immediate impact of meteorological conditions and air pollutants on HFRS. Additionally, we lack access to economic data, including GDP and other economic indicators. As the spread of HFRS is through rodents, farms are the most at-risk groups for exposure. We believe that places with more industry and tourism and less agriculture and farming are likely to have a lower risk.
+
+In most years, there is significant spatial autocorrelation in Zhejiang Province. Local spatial autocorrelation results show that the hotspots initially increase and then decrease, maintaining relatively fixed characteristics. These hotspots are concentrated in the eastern, western, central, and southwestern regions of Zhejiang Province. The spatial autocorrelation results align with the distribution of annual incidence rates in Zhejiang Province. High-incidence areas are mainly in the western and eastern regions, suggesting that adjacent areas to local spatial autocorrelation regions also carry some risk. The application of spatio temporal cluster analysis is extensive, with applications in various infectious disease fields such as HFRS with thrombocytopenia syndrome, typhoid, and hand, foot, and mouth disease. Previous research indicates that the HFRS epidemic area in Zhejiang Province is gradually expanding. There is also research from Zhang et. al [9] They use spatial cluster areas, local spatial autocorrelation regions, and incidence rate distribution detected by SaTScan software, the findings between us are consistent.
+
+The paper also shows that the basic alignment indicates that the key areas for HFRS prevention and control in Zhejiang Province are in the central, eastern, and western regions. The results of retrospective spatio cluster analysis show that the detected high-incidence period is from 2005 to 2017, which is consistent with the distribution of incidence rates in Zhejiang Province. After 2017, the incidence rate in the entire province shows a decreasing trend. Taizhou City, Shaoxing City, and Ningbo City have consistently been high-incidence areas in Zhejiang Province. Local measures targeting key populations should be implemented in these areas based on the seasonal prevalence.
+
+Zhang et.al [2] analysed the correlations between HFRS and meteorological factors, as well as per capital GDP. In their correlation analyses, different grouping forms were adopted, which could effectively avoid pseudo-regression. Time series analysis methods were used to predict future epidemics. We predicted HFRS trends by calibrating an autoregressive integrated moving average-support vector machine (ARIMA-SVM) combination model. The occurrence of infectious diseases is influenced by various factors, including environmental, meteorological, and socio-economic factors. This study analyzes the spatio distribution characteristics and trends of spatio clustering changes in HFRS in Zhejiang Province. It provides data support for in-depth research on the epidemic characteristics, influencing factors, the construction of predictive warning models, and precision prevention and control of HFRS.
+
+The air quality as an air pollution index, consisting of fine particles suspended in a gas or liquid, underscores its potential as an indicator for hantavirus transmission. The existing body of evidence strongly supports the link between air pollution and respiratory infections, primarily attributed to immune system modulation. Similarly, air pollution might influence the frequency of HFRS cases by altering viral infectivity and immunity in both human and rodent populations. However, these potential mechanisms have been primarily explored in the context of respiratory infections, and a comprehensive understanding of the involved processes is yet to be achieved.
+
+While our findings affirm an association between air pollutants, temperature and HFRS, we refrain from characterizing it as a causal effect. Statistical differences between temperature were observed; however, caution should be exercised in drawing causal inferences. Further research is essential to deepen our understanding of the intricate relationship between air pollutants and HFRS.
+
+# Conclusion
+
+Our study elucidated the impact of air pollutants and temperature on HFRS. From 2005 to 2020, HFRS predominantly affected middle-aged and elderly individuals, males, and farmers in Zhejiang Province. The eastern region experienced elevated incidence rates during late spring to early summer and winter. We recommend the implementation of precision prevention and control measures targeting key populations in high-risk areas before the onset of the epidemic season. 
+
+# Reference
+[1] Zhang R, Zhang N, Liu Y, Liu T, Sun J, Ling F and Wang Z (2022) Factors associated with hemorrhagic fever with renal syndrome based maximum entropy model in Zhejiang Province, China. Front. Med. 9:967554. doi: 10.3389/fmed.2022.967554
+
+[2] He J, Christakos G, Zhang W and Wang Y (2017) A Space-Time Study of Hemorrhagic Fever with Renal Syndrome (HFRS) and Its Climatic Associations in Heilongjiang Province, China. Front. Appl. Math. Stat. 3:16. doi: 10.3389/fams.2017.00016
+
+[3] Zhang C, Fu X, Zhang Y, Nie C, Li L, Cao H, Wang J, Wang B, Yi S, Ye Z. Epidemiological and time series analysis of haemorrhagic fever with renal syndrome from 2004 to 2017 in Shandong Province, China. Sci Rep. 2019 Oct 10;9(1):14644. doi: 10.1038/s41598-019-50878-7. PMID: 31601887; PMCID: PMC6787217.
+
+[4] Wang Q, Yue M, Yao P, Zhu C, Ai L, Hu D, Zhang B, Yang Z, Yang X, Luo F, Wang C, Hou W and Tan W (2021) Epidemic Trend and Molecular Evolution of HV Family in the Main Hantavirus Epidemic Areas From 2004 to 2016, in P.R. China. Front. Cell. Infect. Microbiol. 10:584814. doi: 10.3389/fcimb.2020.584814
+
+[5] Li, Shujuan & Ren, Hongyan & Hu, Wensheng & Lu, Liang & xu, Xinliang & Zhuang, Dafang & Liu, Qi-Yong. (2014). Spatiotemporal Heterogeneity Analysis of Hemorrhagic Fever with Renal Syndrome in China Using Geographically Weighted Regression Models. International journal of environmental research and public health. 11. 12129-47. 10.3390/ijerph111212129. 
+
+[6] Qian, J., Luo, C., Lv, Q. et al. Associations between ambient air pollutants and childhood hand, foot, and mouth disease in Sichuan, China: a spatiotemporal study. Sci Rep 13, 3993 (2023). https://doi.org/10.1038/s41598-023-31035-7
+
+[7] Ibañez, M.V.; Martínez-Garcia, M.; Simó, A. A Review of Spatiotemporal Models for Count Data in R Packages. A Case Study of COVID-19 Data. Mathematics 2021, 9, 1538. https://doi.org/10.3390/math9131538
+
+[8] Yang S, Gao Y, Liu X, Liu X, Liu Y, Metelmann S, Yuan C, Yue Y, Chen S, Liu Q. Spatiotemporal dynamics of hemorrhagic fever with renal syndrome in Jiangxi province, China. Sci Rep. 2020 Aug 31;10(1):14291. doi: 10.1038/s41598-020-70761-0. PMID: 32868784; PMCID: PMC7458912.
+
+[9] Zhang R, Zhang N, Ling F, Liu Y, Guo S, Shi XG, Ren JP, Sun JM. [Study on epidemic trend of hemorrhagic fever with renal syndrome in Zhejiang province, 2005-2020]. Zhonghua Liu Xing Bing Xue Za Zhi. 2021 Nov 10;42(11):2030-2036. Chinese. doi: 10.3760/cma.j.cn112338-20210528-00435. PMID: 34818851.
+
+[10] Exposure to air pollution and scarlet fever resurgence in China: a six-year surveillance study https://doi.org/10.1038/s41467-020-17987-8
+
+[11] Analyzing hemorrhagic fever with renal syndrome in Hubei Province, China: a space–time cube-based approach
+
+[12] Li S, Ren H, Hu W, et al. Spatiotemporal heterogeneity analysis of hemorrhagic fever with renal syndrome in China using geographically weighted regression models. Int J Environ Res Public Health 2014; 11: 12129–12147. 
+
+[13] Rathod, Santosha & Gurung, Bishal & Singh, Kamalesh & Ray, Mrinmoy. (2018). An improved Space-Time Autoregressive Moving Average (STARMA) model for Modelling and Forecasting of Spatio-Temporal time-series data. 
+
+[14] Nazia N, Butt ZA, Bedard ML, Tang WC, Sehar H, Law J. Methods Used in the Spatial and Spatiotemporal Analysis of COVID-19 Epidemiology: A Systematic Review. Int J Environ Res Public Health. 2022 Jul 6;19(14):8267. doi: 10.3390/ijerph19148267. PMID: 35886114; PMCID: PMC9324591.
+
+[15] Cressie N, Calder CA, Clark JS, Ver Hoef JM, Wikle CK. Accounting for uncertainty in ecological analysis: the strengths and limitations of hierarchical statistical modeling. Ecol Appl. 2009 Apr;19(3):553-70. doi: 10.1890/07-0744.1. PMID: 19425416.
+
+[16] Zhang R, Mao Z, Yang J, Liu S, Liu Y, et al. (2021) The changing epidemiology of hemorrhagic fever with renal syndrome in Southeastern China during 1963–2020: A retrospective analysis of surveillance data. PLOS Neglected Tropical Diseases 15(8): e0009673. https://doi.org/10.1371/journal.pntd.0009673
+
+[17] Zhang S, Wang S, Yin W, Liang M, Li J, Zhang Q, Feng Z, Li D. Epidemic characteristics of hemorrhagic fever with renal syndrome in China, 2006-2012. BMC Infect Dis. 2014 Jul 11;14:384. doi: 10.1186/1471-2334-14-384. PMID: 25012160; PMCID: PMC4105051.
+
+
+[18] Xu, Q., Li, R., Rutherford, S., Luo, C., Liu, Y., Wang, Z., & Li, X. (2018). Using a distributed lag non-linear model to identify impact of temperature variables on haemorrhagic fever with renal syndrome in Shandong Province. Epidemiology & Infection, 146(13), 1671-1679. doi:10.1017/S095026881800184X
